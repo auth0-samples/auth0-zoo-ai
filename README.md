@@ -49,3 +49,18 @@ brew install poetry
    ```
 
    This will install all dependencies defined in `pyproject.toml` and create a virtual environment.
+
+## Running the Projects
+
+### 1. API Server (Port 8000)
+
+The API server provides the internal endpoints for zoo management operations.
+
+**Start the API server:**
+```bash
+cd api
+poetry run uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+
+The API will be available at: `http://localhost:8000`
