@@ -3,8 +3,7 @@ async function sendMessage() {
     const message = input.value.trim();
     
     if (message) {
-        const messagesContainer = document.getElementById('chat-messages');
-        messagesContainer.innerHTML += `<div class="alert alert-primary ms-auto" style="max-width:80%">${message}</div>`;
+        print_message(message, "human")
         input.value = '';
         
         const response = await fetch(`/prompt`, {
@@ -16,8 +15,27 @@ async function sendMessage() {
         });
 
         const data = await response.json();
-        messagesContainer.innerHTML += `<div class="alert alert-secondary" style="max-width:80%">${data.response}</div>`;
+        print_message(data.response, "ai")
     }
+}
+
+function print_message(message, type) {
+    const divclass = type === "human" ? "alert alert-primary ms-auto" : "alert alert-secondary";
+    const messagesContainer = document.getElementById('chat-messages');
+    messagesContainer.innerHTML += `<div class="${divclass}" style="max-width:80%">${message}</div>`;
+
+    const chat = document.getElementById("chat-messages")
+    chat.scrollTop = chat.scrollHeight
+}
+
+
+async function fetchMessagesAndPrint() {
+    const response = await fetch('/prompt')
+    let messages = await response.json()
+
+    messages.forEach( message => {
+        print_message(message.prompt, message.type)
+    })
 }
 
 async function fetchNotifications() {
@@ -49,7 +67,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (e.key === 'Enter') sendMessage();
     });
     sendButton.addEventListener('click', sendMessage);
-    
+
+    await fetchMessagesAndPrint();
     await fetchNotifications();
-    setInterval(fetchNotifications, 30000);
+    setInterval(fetchNotifications, 5000);
 });

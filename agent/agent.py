@@ -1,103 +1,20 @@
 import logging
-import os
-from typing import Callable
+from datetime import datetime
+from typing import Annotated, Iterable, TypedDict
+
 from dotenv import load_dotenv
-import requests
-from langchain.agents import AgentExecutor, create_tool_calling_agent
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.tools import tool
-from langchain_openai import ChatOpenAI
-from pydantic import BaseModel, Field
+from langchain.chat_models import init_chat_model
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.constants import END, START
+from langgraph.graph import StateGraph, add_messages
+from langgraph.prebuilt import ToolNode, tools_condition
+
 
 logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-API_BASE_URL = os.getenv("API_BASE_URL")
-
-
-def _get_headers(token: str) -> dict:
-    return {"Authorization": f"Bearer {token}"}
-
-
-def list_animals_tool(token: str) -> Callable:
-
-    @tool
-    def list_animals(event: str) -> list[dict]:
-        """Get the list of all animals and their IDs."""
-        logger.info("list animals %s", event)
-
-        response = requests.get(
-            f"{API_BASE_URL}/animal", headers=_get_headers(token=token)
-        )
-
-        response.raise_for_status()
-        return response.json()
-
-    return list_animals
-
-
-class UpdateAnimalStatusArgs(BaseModel):
-    animal_id: str = Field(..., description="ID of the animal to update")
-    event_description: str = Field(
-        ..., description="Clear and concise description of the event"
-    )
-
-
-def update_animal_status_tool(token: str) -> Callable:
-    @tool(args_schema=UpdateAnimalStatusArgs)
-    def update_animal_status(animal_id: str, event_description: str) -> str:
-        """Add an event to an animal."""
-        logger.info("add animal event %s", event_description)
-
-        response = requests.post(
-            f"{API_BASE_URL}/animal/{animal_id}/status",
-            headers=_get_headers(token=token),
-            json={"status": event_description},
-        )
-
-        response.raise_for_status()
-        return "event added"
-
-    return update_animal_status
-
-
-class NotifyStaffArgs(BaseModel):
-    event: str = Field(..., description="Event to notify staff about")
-    staff_role: str = Field(
-        ...,
-        description="Role of the staff to notify. Can be COORDINATOR, VETERINARIAN, JANITOR or ZOOKEEPER",
-    )
-
-
-def notify_staff_tool(token: str) -> Callable:
-    @tool(args_schema=NotifyStaffArgs)
-    def notify_staff(event: str, staff_role: str) -> str:
-        """Notify a staff group about an event at the zoo."""
-        logger.info("notify staff %s", event)
-
-        response = requests.post(
-            f"{API_BASE_URL}/staff/notification/{staff_role}",
-            headers=_get_headers(token=token),
-            json={"description": event},
-        )
-
-        response.raise_for_status()
-        return "notification sent"
-
-    return notify_staff
-
-
-def _create_tools(token: str) -> list[Callable]:
-    return [
-        list_animals_tool(token),
-        update_animal_status_tool(token),
-        notify_staff_tool(token),
-    ]
-
-
-# OpenAI model (you need to export OPENAI_API_KEY)
-llm = ChatOpenAI(temperature=0, model="gpt-4o-mini")
 
 SYSTEM_MESSAGE_PREFIX = """
 You are the Smart Zoo AI Assistant. Your primary role is to assist zoo staff with managing operations by intelligently using the available tools.
@@ -122,6 +39,11 @@ Always think step-by-step:
 Also, any notification for the users should pass the animal name, location and any other relevant information
 7. Events related to medical attention should be logged in the animal database and notified to the staff.
 8. Events related to cleaning attention should be logged in the animal database and notified to the staff.
+9. Veterinarians can ask for medical supplies to be delivered to an animal. If a supplied is asked, keep an annotation in the animal database.
+10. Zookeepers can ask for cleaning supplies to be delivered to a specific location.
+11. Coordinators can ask for any kind of supplies.
+12. If the user is referring to a staff group, notify the staff group of the event.
+
 
 If you are unsure about an action or if critical information is missing, ask for clarification.
 Prioritize safety and adherence to zoo protocols.
@@ -130,28 +52,81 @@ Begin!
 
 """
 
-prompt = ChatPromptTemplate.from_messages(
-    [
-        ("system", SYSTEM_MESSAGE_PREFIX),
-        ("human", "{input}"),
-        MessagesPlaceholder(variable_name="agent_scratchpad"),
-    ]
-)
+tools = [
+    ## ADD YOUR TOOLS HERE
+]
 
 
-async def run_agent(user_input: str, user_role: str, user_id: str, token: str) -> str:
+class State(TypedDict):
+    messages: Annotated[list, add_messages]
 
-    tools = _create_tools(token)
-    agent = create_tool_calling_agent(llm, tools, prompt=prompt)
 
-    agent_executor = AgentExecutor(agent=agent, tools=tools)
+__LLM = init_chat_model("openai:gpt-4o-mini").bind_tools(tools)
 
-    message = {
-        "input": f"Role: '{user_role}'. User id: '{user_id}'. \nQuery: \n{user_input}"
+
+async def chatbot(state: State) -> State:
+
+    request_messages = state.get("messages")
+    if not request_messages or len(request_messages) == 1:
+        initial = SystemMessage(SYSTEM_MESSAGE_PREFIX)
+        request_messages = [initial, request_messages[0]]
+        state["messages"] = request_messages
+
+    response_messages = await __LLM.ainvoke(request_messages)
+
+    if isinstance(response_messages, list):
+        state["messages"].extend(response_messages)
+    else:
+        state["messages"].append(response_messages)
+    return state
+
+
+def create_langgraph():
+    graph_builder = StateGraph(State)
+    graph_builder.add_node("chatbot", chatbot)
+    graph_builder.add_node("tools", ToolNode(tools))
+    graph_builder.add_edge(START, "chatbot")
+    graph_builder.add_edge("chatbot", END)
+    graph_builder.add_edge("tools", "chatbot")
+    graph_builder.add_conditional_edges("chatbot", tools_condition)
+    return graph_builder.compile(checkpointer=InMemorySaver())
+
+
+__GRAPH = create_langgraph()
+
+
+async def run_agent(
+    user_input: str, user_role: str, user_id: str, token: str, refresh_token: str
+) -> str:
+    config = {
+        "configurable": {
+            "thread_id": user_id,
+            "_credentials": {"refresh_token": refresh_token},
+            "api_access_token": token,
+        }
     }
+    message = HumanMessage(
+        content=f"User role: {user_role}. Timestamp: {datetime.now().isoformat()}, User input: {user_input}"
+    )
 
-    logger.info("Query %s", message)
+    initial_state = State(messages=[message])
 
-    response = await agent_executor.ainvoke(message)
+    response = await __GRAPH.ainvoke(
+        initial_state,
+        config=config,
+    )
 
-    return response["output"]
+    return response["messages"][-1].content
+
+
+async def get_messages(user_id: str) -> Iterable[HumanMessage | AIMessage]:
+    config = {
+        "configurable": {
+            "thread_id": user_id,
+        }
+    }
+    snapshot = __GRAPH.get_state(config=config)
+    return filter(
+        lambda message: isinstance(message, (HumanMessage, AIMessage)),
+        snapshot.values.get("messages", []),
+    )

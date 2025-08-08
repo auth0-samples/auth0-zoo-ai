@@ -1,38 +1,95 @@
-from tinydb import Query, TinyDB
+from datetime import datetime
+from sqlite3 import Connection
 
 from schema import Animal, AnimalStatus, StaffNotification, StaffRole
+
 
 class ItemNotFound(Exception):
     pass
 
+
 class AnimalCatalog:
-    def __init__(self, db: TinyDB):
-        self.table = db.table("animals")
-        self.Animal = Query()
+    def __init__(self, conn: Connection):
+        self.conn = conn
 
     def get_all(self) -> list[Animal]:
-        return [Animal(**item) for item in self.table.all()]
+        cursor = self.conn.execute("SELECT * FROM animal")
+        animals = []
+        for row in cursor.fetchall():
+            animal_id, name, specie, age = row
+            statuses = self._get_statuses(animal_id)
+            animals.append(
+                Animal(
+                    id=animal_id,
+                    name=name,
+                    specie=specie,
+                    age=age,
+                    last_status=statuses,
+                )
+            )
+        return animals
+
+    def _get_statuses(self, animal_id: str) -> list[AnimalStatus]:
+        cursor = self.conn.execute(
+            "SELECT time, status, user_role, user_id FROM animal_status WHERE animal_id = ? ORDER BY time DESC",
+            (animal_id,),
+        )
+        return [
+            AnimalStatus(
+                time=datetime.fromisoformat(t), status=s, user_role=r, user_id=u
+            )
+            for t, s, r, u in cursor.fetchall()
+        ]
 
     def add_status(self, animal_id: str, status: AnimalStatus):
-        result = self.table.search(self.Animal.id == animal_id)
-        if not result:
-            raise ItemNotFound
-        # prepend the new status to the list
-        result[0]["last_status"].insert(0, status.model_dump(mode="json"))
-        self.table.update(result[0], self.Animal.id == animal_id)
+        cursor = self.conn.execute("SELECT 1 FROM animal WHERE id = ?", (animal_id,))
+        if not cursor.fetchone():
+            raise ItemNotFound()
+
+        self.conn.execute(
+            "INSERT INTO animal_status (animal_id, time, status, user_role, user_id) VALUES (?, ?, ?, ?, ?)",
+            (
+                animal_id,
+                status.time.isoformat(),
+                status.status,
+                status.user_role,
+                status.user_id,
+            ),
+        )
+        self.conn.commit()
+
 
 class StaffNotificationCatalog:
-    def __init__(self, db: TinyDB):
-        self.table = db.table("staff_notification")
-        self.StaffNotification = Query()
+    def __init__(self, conn: Connection):
+        self.conn = conn
 
     def get_notifications_by_role(
         self, staff_role: StaffRole
     ) -> list[StaffNotification]:
-        notifications_by_role = self.table.search(
-            self.StaffNotification.destination_role == staff_role.value
+        cursor = self.conn.execute(
+            "SELECT time, description, destination_role, notifier_role, notifier_id FROM staff_notification WHERE destination_role = ?",
+            (staff_role.value,),
         )
+        return [
+            StaffNotification(
+                time=datetime.fromisoformat(t),
+                description=desc,
+                destination_role=dest,
+                notifier_role=notifier,
+                notifier_id=notifier_id,
+            )
+            for t, desc, dest, notifier, notifier_id in cursor.fetchall()
+        ]
 
-        return [StaffNotification(**item) for item in notifications_by_role]
     def add_notification(self, notification: StaffNotification):
-        self.table.insert(notification.model_dump(mode="json"))
+        self.conn.execute(
+            "INSERT INTO staff_notification (time, description, destination_role, notifier_role, notifier_id) VALUES (?, ?, ?, ?, ?)",
+            (
+                notification.time.isoformat(),
+                notification.description,
+                notification.destination_role.value,
+                notification.notifier_role.value,
+                notification.notifier_id,
+            ),
+        )
+        self.conn.commit()

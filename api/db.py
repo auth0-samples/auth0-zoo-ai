@@ -1,39 +1,101 @@
 import logging
+import sqlite3
+from contextlib import closing
 from pathlib import Path
+from sqlite3 import Connection
 from typing import Generator
-from tinydb import TinyDB
-from schema import Animal
 
 logger = logging.getLogger(__name__)
 
-def initialize_db() -> Generator[TinyDB]:
+
+def initialize_db() -> Generator[Connection, None, None]:
     logger.info("Starting database")
+
     Path("./data").mkdir(exist_ok=True)
-    db_path = "./data/db.json"
-    file_exists = Path(db_path).exists()
-    db = TinyDB(db_path)
-    if not file_exists:
-        __load_start_data(db)
+
+    conn = sqlite3.connect("data/db", check_same_thread=False)
+
+    if __create_schema(conn):
+        __load_start_data(conn)
+
     try:
-        yield db
+        yield conn
     finally:
-        db.close()
+        conn.close()
 
 
-def __load_start_data(db: TinyDB):
+def __create_schema(conn: Connection) -> bool:
+    """returns true if the schema needed to be created and false if the schema already existed"""
+
+    with closing(conn.cursor()) as cursor:
+        cursor.execute(
+            """
+            SELECT 1 FROM sqlite_master WHERE type='table' and name='animal'
+        """
+        )
+
+        result = cursor.fetchone()
+
+        if result:
+            return False
+
+        ## creates the db schema
+        cursor.execute(
+            """
+        CREATE TABLE animal (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                specie TEXT NOT NULL,
+                age INTEGER NOT NULL
+            );
+        """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE animal_status (
+                animal_id TEXT NOT NULL,
+                time DATETIME NOT NULL,
+                status TEXT NOT NULL,
+                user_role TEXT NOT NULL CHECK (user_role IN ('JANITOR', 'VETERINARIAN', 'COORDINATOR', 'ZOOKEEPER')),
+                user_id TEXT NOT NULL,
+                PRIMARY KEY (animal_id, time),
+                FOREIGN KEY (animal_id) REFERENCES animal(id) ON DELETE CASCADE
+            );
+        """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS staff_notification (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                time DATETIME NOT NULL,
+                description TEXT NOT NULL,
+                destination_role TEXT NOT NULL CHECK (destination_role IN ('JANITOR', 'VETERINARIAN', 'COORDINATOR', 'ZOOKEEPER')),
+                notifier_role TEXT NOT NULL CHECK (notifier_role IN ('JANITOR', 'VETERINARIAN', 'COORDINATOR', 'ZOOKEEPER')),
+                notifier_id TEXT NOT NULL
+            );
+        """
+        )
+
+    __load_start_data(conn)
+
+    return True
+
+
+def __load_start_data(conn: Connection):
     logger.info("DB does not exist. Loading start data")
-    zoo_animals = [
-        Animal(id="ALEX", name="Alex", specie="Lion", age=4, last_status=[]),
-        Animal(
-            id="KING_JULIEN", name="King Julien", specie="Lemur", age=12, last_status=[]
-        ),
-        Animal(id="MORT", name="Mort", specie="Mouse lemur", age=50, last_status=[]),
-        Animal(id="SKIPPER", name="Skipper", specie="Penguin", age=35, last_status=[]),
-        Animal(id="MARTY", name="Marty", specie="Zebra", age=10, last_status=[]),
-        Animal(
-            id="GLORIA", name="Gloria", specie="Hippopotamus", age=6, last_status=[]
-        ),
-        Animal(id="PRIVATE", name="Private", specie="Penguin", age=10, last_status=[]),
-        Animal(id="KOWALSKI", name="Kowalski", specie="Lion", age=3, last_status=[]),
-    ]
-    db.table("animals").insert_multiple([animal.model_dump() for animal in zoo_animals])
+    with closing(conn.cursor()) as cursor:
+        sql = """
+            INSERT INTO animal(id, name, specie, age) VALUES (?,?,?,?)
+        """
+        animals = [
+            ("ALEX", "Alex", "Lion", 4),
+            ("KING_JULIEN", "King Julien", "Lemur", 12),
+            ("MORT", "Mort", "Mouse lemur", 50),
+            ("SKIPPER", "Skipper", "Penguin", 35),
+            ("MARTY", "Marty", "Zebra", 10),
+            ("GLORIA", "Gloria", "Hippopotamus", 6),
+            ("PRIVATE", "Private", "Penguin", 10),
+            ("KOWALSKI", "Kowalski", "Penguin", 3),
+        ]
+        cursor.executemany(sql, animals)
+        conn.commit()
