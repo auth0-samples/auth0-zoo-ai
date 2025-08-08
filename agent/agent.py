@@ -9,7 +9,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.constants import END, START
 from langgraph.graph import StateGraph, add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
-
+from agent.zoo_tools import list_animals, notify_staff, update_animal_status
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,9 @@ Begin!
 """
 
 tools = [
-    ## ADD YOUR TOOLS HERE
+    list_animals,
+    update_animal_status,
+    notify_staff,
 ]
 
 
