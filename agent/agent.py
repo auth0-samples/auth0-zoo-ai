@@ -1,11 +1,9 @@
 import logging
-from datetime import datetime
-from typing import Annotated, Iterable, TypedDict
+from typing import Annotated, TypedDict
 
 from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from langgraph.checkpoint.memory import InMemorySaver
+from langchain_core.messages import SystemMessage
 from langgraph.constants import END, START
 from langgraph.graph import StateGraph, add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
@@ -13,6 +11,10 @@ from zoo_tools import list_animals, notify_staff, update_animal_status
 from tools_thirdparty_api_call import (ask_for_cleaning_supplies_tool,
                                        ask_for_veterinarian_supplies_tool)
 from tools_async_auth import emergency_protocol_tool
+from tools_thirdparty_api_call import (
+    ask_for_cleaning_supplies_tool,
+    ask_for_veterinarian_supplies_tool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +63,7 @@ tools = [
     notify_staff,
     ask_for_veterinarian_supplies_tool,
     ask_for_cleaning_supplies_tool,
-    emergency_protocol_tool
+    emergency_protocol_tool,
 ]
 
 
@@ -97,44 +99,7 @@ def create_langgraph():
     graph_builder.add_edge("chatbot", END)
     graph_builder.add_edge("tools", "chatbot")
     graph_builder.add_conditional_edges("chatbot", tools_condition)
-    return graph_builder.compile(checkpointer=InMemorySaver())
+    return graph_builder.compile()
 
 
-__GRAPH = create_langgraph()
-
-
-async def run_agent(
-    user_input: str, user_role: str, user_id: str, token: str, refresh_token: str
-) -> str:
-    config = {
-        "configurable": {
-            "thread_id": user_id,
-            "_credentials": {"refresh_token": refresh_token},
-            "api_access_token": token,
-        }
-    }
-    message = HumanMessage(
-        content=f"User role: {user_role}. Timestamp: {datetime.now().isoformat()}, User input: {user_input}"
-    )
-
-    initial_state = State(messages=[message])
-
-    response = await __GRAPH.ainvoke(
-        initial_state,
-        config=config,
-    )
-
-    return response["messages"][-1].content
-
-
-async def get_messages(user_id: str) -> Iterable[HumanMessage | AIMessage]:
-    config = {
-        "configurable": {
-            "thread_id": user_id,
-        }
-    }
-    snapshot = __GRAPH.get_state(config=config)
-    return filter(
-        lambda message: isinstance(message, (HumanMessage, AIMessage)),
-        snapshot.values.get("messages", []),
-    )
+graph = create_langgraph()
