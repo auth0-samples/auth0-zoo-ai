@@ -1,5 +1,6 @@
 import logging
 import os
+from datetime import datetime
 from typing import Iterable, Literal
 
 import requests
@@ -11,16 +12,37 @@ from fastapi import Depends, FastAPI, Request, Response
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph_sdk import get_client
 from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
-
-from agent import get_messages, run_agent
 
 load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
+
+langgraph_client = get_client(url=os.getenv("LANGGRAPH_URL", "http://localhost:2024"))
+
+
+async def get_thread(request: Request) -> dict:
+    try:
+        thread_id = await get_thread_id(request)
+        thread = await langgraph_client.threads.get(thread_id)
+    except:
+        thread_id = await get_thread_id(request, create_new=True)
+        thread = await langgraph_client.threads.get(thread_id)
+    return thread
+
+
+async def get_thread_id(request: Request, create_new=False) -> str:
+    if "thread_id" not in request.session or create_new:
+        logging.info("Creating new thread")
+        thread = await langgraph_client.threads.create()
+        request.session["thread_id"] = thread["thread_id"]
+
+    return request.session["thread_id"]
+
 
 app = FastAPI()
 
@@ -57,16 +79,31 @@ class Prompt(BaseModel):
 
 @app.get("/prompt")
 async def get_prompt(
+    request: Request,
     auth_session=Depends(auth_client.require_session),
 ) -> Iterable[Prompt]:
-    user_id = auth_session["user"]["sub"]
 
-    messages = await get_messages(user_id)
-    return filter(None, map(_convert_to_prompt, messages))
+    thread = await get_thread(request)
+    messages = []
+    if "values" in thread and "messages" in thread["values"]:
+        messages = list(
+            filter(None, map(_convert_to_prompt, thread["values"]["messages"]))
+        )
+    return messages
+
+
+@app.get("/prompt/new")
+async def get_new_prompt(request: Request, response: Response):
+    await get_thread_id(request, create_new=True)
+    return RedirectResponse(url="/")
 
 
 def _convert_to_prompt(message: HumanMessage | AIMessage) -> Prompt | None:
-    content = message.content
+
+    if message["type"] not in ["human", "ai"]:
+        return None
+
+    content = message["content"]
 
     if not content:
         return None
@@ -76,7 +113,7 @@ def _convert_to_prompt(message: HumanMessage | AIMessage) -> Prompt | None:
     if marker in content:
         content = content.split(marker, 1)[1].strip()
 
-    return Prompt(prompt=content, type=message.type)
+    return Prompt(prompt=content, type=message["type"])
 
 
 @app.post("/prompt")
@@ -86,15 +123,29 @@ async def query_genai(
     response: Response,
     auth_session=Depends(auth_client.require_session),
 ):
+    user_role = auth_session["user"]["https://zooai/roles"][0]
+    access_token = await get_access_token(request, response)
+    refresh_token = auth_session.get("refresh_token")
 
-    result = await run_agent(
-        data.prompt,
-        user_role=auth_session["user"]["https://zooai/roles"][0],
-        user_id=auth_session["user"]["sub"],
-        token=await get_access_token(request, response),
-        refresh_token=auth_session.get("refresh_token"),
+    result = await langgraph_client.runs.wait(
+        thread_id=await get_thread_id(request),
+        assistant_id="agent",
+        input={
+            "messages": [
+                HumanMessage(
+                    content=f"User role: {user_role}. Timestamp: {datetime.now().isoformat()}, User input: {data.prompt}"
+                )
+            ]
+        },
+        config={
+            "configurable": {
+                "_credentials": {"refresh_token": refresh_token},
+                "api_access_token": access_token,
+            }
+        },
     )
-    return {"response": result}
+
+    return {"response": result["messages"][-1]["content"]}
 
 
 @app.get("/staff_notifications")
