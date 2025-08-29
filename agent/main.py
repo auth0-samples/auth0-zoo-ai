@@ -74,7 +74,7 @@ async def serve_homepage(request: Request, response: Response):
 
 class Prompt(BaseModel):
     prompt: str
-    type: Literal["human", "ai"] = "human"
+    type: Literal["human", "ai", "interrupted"] = "human"
 
 
 @app.get("/prompt")
@@ -89,6 +89,13 @@ async def get_prompt(
         messages = list(
             filter(None, map(_convert_to_prompt, thread["values"]["messages"]))
         )
+
+    interrupts = thread.get("interrupts", {})
+    for interrupt in interrupts.values():
+        messages.append(
+            Prompt(prompt=interrupt[0]["value"]["message"], type="interrupted")
+        )
+
     return messages
 
 
