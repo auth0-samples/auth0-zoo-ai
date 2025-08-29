@@ -12,6 +12,7 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from zoo_tools import list_animals, notify_staff, update_animal_status
 from tools_thirdparty_api_call import (ask_for_cleaning_supplies_tool,
                                        ask_for_veterinarian_supplies_tool)
+from tools_async_auth import emergency_protocol_tool
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,7 @@ tools = [
     notify_staff,
     ask_for_veterinarian_supplies_tool,
     ask_for_cleaning_supplies_tool,
+    emergency_protocol_tool
 ]
 
 
