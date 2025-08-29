@@ -14,7 +14,6 @@ with_emergency_protocol = auth0_ai.with_async_user_confirmation(
     binding_message="Emergency protocol triggered",
     user_id=os.getenv("EMERGENCY_COORDINATOR_ID"),
     audience=os.getenv("API_AUDIENCE"),
-    on_authorization_request="block"
 )
 
 
