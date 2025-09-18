@@ -3,8 +3,7 @@ async function sendMessage() {
     const message = input.value.trim();
     
     if (message) {
-        const messagesContainer = document.getElementById('chat-messages');
-        messagesContainer.innerHTML += `<div class="alert alert-primary ms-auto" style="max-width:80%">${message}</div>`;
+        print_message(message, "human")
         input.value = '';
         
         const response = await fetch(`/prompt`, {
@@ -14,10 +13,31 @@ async function sendMessage() {
             },
             body: JSON.stringify({ prompt: message })
         });
-
-        const data = await response.json();
-        messagesContainer.innerHTML += `<div class="alert alert-secondary" style="max-width:80%">${data.response}</div>`;
     }
+}
+
+function print_message(message, type) {
+    const classes = {
+        human: "alert alert-primary ms-auto",
+        ai: "alert alert-secondary",
+        interrupted: "alert alert-warning w-75 mx-auto text-center"
+    }
+    const divclass = classes[type]
+    const messagesContainer = document.getElementById('chat-messages');
+    messagesContainer.innerHTML += `<div class="${divclass}" style="max-width:80%">${message}</div>`;
+    const chat = document.getElementById("chat-messages")
+    chat.scrollTop = chat.scrollHeight
+}
+
+
+async function fetchMessagesAndPrint() {
+    const response = await fetch('/prompt')
+    let messages = await response.json()
+    const messagesContainer = document.getElementById('chat-messages');
+    messagesContainer.innerHTML = '';
+    messages.forEach( message => {
+        print_message(message.prompt, message.type)
+    })
 }
 
 async function fetchNotifications() {
@@ -44,12 +64,14 @@ function displayNotifications(notifications) {
 document.addEventListener('DOMContentLoaded', async () => {
     const messageInput = document.getElementById('message-input');
     const sendButton = document.getElementById('send-button');
-    
+
     messageInput.addEventListener('keypress', (e) => {
         if (e.key === 'Enter') sendMessage();
     });
     sendButton.addEventListener('click', sendMessage);
-    
+
+    await fetchMessagesAndPrint();
+    setInterval(fetchMessagesAndPrint, 5000);
     await fetchNotifications();
-    setInterval(fetchNotifications, 30000);
+    setInterval(fetchNotifications, 5000);
 });
